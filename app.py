@@ -52,7 +52,14 @@ model, le, hands = load_artifacts()
 if "frame_buffer" not in st.session_state:
     st.session_state.frame_buffer = collections.deque(maxlen=60)
 
-RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+RTC_CONFIG = RTCConfiguration({
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+        {"urls": ["stun:stun.services.mozilla.com"]}
+    ]
+})
 
 # 3. Callback Kamera Real-Time
 def video_frame_callback(frame):
