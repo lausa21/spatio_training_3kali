@@ -1,116 +1,87 @@
-import streamlit as st
-import cv2
-import numpy as np
-import collections
+import os
 import pickle
-import av
-import mediapipe as mp
-from streamlit_webrtc import webrtc_streamer, RTCConfiguration
+import tempfile
+import numpy as np
+import pandas as pd
+import streamlit as st
 
-# Impor fungsi preprocessing dan arsitektur dari model_utils.py
-from model_utils import (
-    build_transformer_model_v2,  # Ubah menjadi v2
-    extract_frame_features,
-    trim_idle_frames,
-    normalize_sequence,
-    TARGET_SEQ_LEN, 
-    FEATURE_DIM    
-    # NUM_CLASSES dihapus dari daftar impor
-)
+from model_utils import build_transformer_model, video_to_model_input, TARGET_SEQ_LEN, FEATURE_DIM
 
-# Deklarasikan NUM_CLASSES secara manual di sini
-NUM_CLASSES = 17 
+ARTIFACTS_DIR = "artifacts"
+WEIGHTS_PATH = os.path.join(ARTIFACTS_DIR, "model_4_seed42_best.weights.h5")
+ENCODER_PATH = os.path.join(ARTIFACTS_DIR, "label_encoder.pkl")
 
-# 1. Pemuatan Artifacts Berbasis Cache
-@st.cache_resource
+st.set_page_config(page_title="Deteksi Bahasa Isyarat (Hands)", page_icon="🤟", layout="centered")
+
+@st.cache_resource(show_spinner="Memuat model...")
 def load_artifacts():
-    with open("artifacts/label_encoder.pkl", "rb") as f:
+    if not os.path.exists(ENCODER_PATH) or not os.path.exists(WEIGHTS_PATH):
+        st.error("File artifacts tidak lengkap.")
+        st.stop()
+
+    with open(ENCODER_PATH, "rb") as f:
         le = pickle.load(f)
-    
-    # Gunakan pemanggil fungsi v2
-    model = build_transformer_model_v2(
-        seq_len=TARGET_SEQ_LEN, 
-        feature_dim=FEATURE_DIM, 
-        num_classes=NUM_CLASSES
+
+    num_classes = len(le.classes_)
+    model = build_transformer_model(num_classes=num_classes)
+    model.load_weights(WEIGHTS_PATH)
+    return model, le
+
+def predict(model, le, filepath, top_k=5):
+    model_input, raw_seq = video_to_model_input(filepath)
+    if model_input is None or raw_seq.shape[0] == 0:
+        return None, None
+
+    probs = model.predict(model_input, verbose=0)[0]
+    top_idx = np.argsort(probs)[::-1][:top_k]
+    labels = le.inverse_transform(top_idx)
+    scores = probs[top_idx]
+    return list(zip(labels, scores)), raw_seq.shape[0]
+
+def main():
+    st.title("🤟 Deteksi Kosakata Bahasa Isyarat")
+    st.caption("Model: Transformer (Dengan Augmentasi) | Seed 42 | Input: 84-D | 30 frame")
+
+    model, le = load_artifacts()
+
+    st.info(f"Model siap. Jumlah kosakata terdaftar: **{len(le.classes_)}**")
+    with st.expander("Lihat daftar kosakata yang dikenali model"):
+        st.write(", ".join(sorted(le.classes_)))
+
+    uploaded_file = st.file_uploader(
+        "Upload video isyarat tangan (.mp4)",
+        type=["mp4", "mov", "avi"],
+        help="Idealnya video berisi satu gerakan/kosakata, tangan terlihat jelas."
     )
-    model.load_weights("artifacts/model_4_seed42_best.weights.h5")
-    return le, model
 
-le, model = load_artifacts()
+    if uploaded_file is not None:
+        st.video(uploaded_file)
 
-# 2. Inisialisasi MediaPipe Hands
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=2,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.5,
-)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+            tmp.write(uploaded_file.read())
+            tmp_path = tmp.name
 
-# 3. Buffer Dinamis (60 Frame / 2 Detik)
-frame_buffer = collections.deque(maxlen=60)
-prediction_text = "Menunggu gerakan isyarat..."
+        try:
+            with st.spinner("Mengekstrak landmark tangan & memprediksi..."):
+                results, n_frames = predict(model, le, tmp_path, top_k=5)
+        finally:
+            os.unlink(tmp_path)
 
-# 4. Konfigurasi STUN Server
-RTC_CONFIG = RTCConfiguration({
-    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-})
+        if results is None:
+            st.warning("Tidak ada tangan yang terdeteksi di video ini.")
+            return
 
-# 5. Callback Inferensi Real-Time
-def video_frame_callback(frame):
-    global prediction_text
-    img = frame.to_ndarray(format="bgr24")
-    
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img_rgb.flags.writeable = False
-    results = hands.process(img_rgb)
-    
-    features = extract_frame_features(results)
-    frame_buffer.append(features)
-    
-    # Picu evaluasi jika buffer sudah menampung 60 frame
-    if len(frame_buffer) == 60:
-        sequence_raw = np.array(frame_buffer, dtype=np.float32)
-        
-        # Potong frame statis di awal dan akhir peragaan
-        sequence_trimmed, _ = trim_idle_frames(sequence_raw, threshold_ratio=0.15)
-        
-        # Validasi sisa frame (minimal 15 frame bergerak untuk diprediksi)
-        if sequence_trimmed.shape[0] >= 15:
-            # Susutkan/Tarik menjadi 30 frame secara proporsional
-            norm_seq = normalize_sequence(sequence_trimmed)
-            input_data = np.expand_dims(norm_seq, axis=0)
-            
-            y_pred_proba = model.predict(input_data, verbose=0)
-            y_pred_idx = np.argmax(y_pred_proba, axis=1)
-            confidence = np.max(y_pred_proba)
-            
-            if confidence > 0.60:
-                label_teks = le.inverse_transform(y_pred_idx)[0]
-                prediction_text = f"Deteksi: {label_teks} ({confidence:.2f})"
-            
-            # Bersihkan buffer setelah prediksi berhasil
-            frame_buffer.clear()
-        else:
-            # Jika tidak ada gerakan, buang separuh isi buffer terlama
-            # agar antrean terus bergeser mencari pergerakan baru
-            for _ in range(30):
-                frame_buffer.popleft()
-                
-    # UI Teks di Frame Kamera
-    cv2.rectangle(img, (0, 0), (640, 60), (14, 52, 112), -1)
-    cv2.putText(img, prediction_text, (15, 40), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-                        
-    return av.VideoFrame.from_ndarray(img, format="bgr24")
+        st.success(f"Video diproses ({n_frames} frame terbaca).")
+        top_label, top_score = results[0]
+        st.metric("Prediksi Teratas", top_label, f"{top_score * 100:.1f}% keyakinan")
 
-# 6. Antarmuka Web
-st.set_page_config(page_title="Deteksi Isyarat Medis", layout="wide")
-st.title("Sistem Deteksi Bahasa Isyarat Medis Berbasis Transformer")
+        st.subheader("Top-5 Prediksi")
+        df = pd.DataFrame(results, columns=["Kosakata", "Probabilitas"])
+        df["Probabilitas"] = (df["Probabilitas"] * 100).round(2)
+        st.bar_chart(df.set_index("Kosakata"))
+        st.dataframe(df, hide_index=True, use_container_width=True)
+    else:
+        st.write("👆 Upload video untuk mulai prediksi.")
 
-webrtc_streamer(
-    key="skripsi-deteksi",
-    rtc_configuration=RTC_CONFIG,
-    video_frame_callback=video_frame_callback,
-    media_stream_constraints={"video": True, "audio": False}
-)
+if __name__ == "__main__":
+    main()
