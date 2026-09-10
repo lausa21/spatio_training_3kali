@@ -9,14 +9,17 @@ from streamlit_webrtc import webrtc_streamer, RTCConfiguration
 
 # Impor fungsi preprocessing dan arsitektur dari model_utils.py
 from model_utils import (
-    build_transformer_model,
+    build_transformer_model_v2,  # Ubah menjadi v2
     extract_frame_features,
     trim_idle_frames,
     normalize_sequence,
-    TARGET_SEQ_LEN, # 30
-    FEATURE_DIM,    # 84
-    NUM_CLASSES     # 17
+    TARGET_SEQ_LEN, 
+    FEATURE_DIM    
+    # NUM_CLASSES dihapus dari daftar impor
 )
+
+# Deklarasikan NUM_CLASSES secara manual di sini
+NUM_CLASSES = 17 
 
 # 1. Pemuatan Artifacts Berbasis Cache
 @st.cache_resource
@@ -24,7 +27,8 @@ def load_artifacts():
     with open("artifacts/label_encoder.pkl", "rb") as f:
         le = pickle.load(f)
     
-    model = build_transformer_model(
+    # Gunakan pemanggil fungsi v2
+    model = build_transformer_model_v2(
         seq_len=TARGET_SEQ_LEN, 
         feature_dim=FEATURE_DIM, 
         num_classes=NUM_CLASSES
