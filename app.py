@@ -33,7 +33,7 @@ def load_artifacts():
         feature_dim=FEATURE_DIM, 
         num_classes=NUM_CLASSES
     )
-    model.load_weights("artifacts/model_2_best.weights.h5")
+    model.load_weights("artifacts/model_4_seed42_best.weights.h5")
     return le, model
 
 le, model = load_artifacts()
