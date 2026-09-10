@@ -123,32 +123,27 @@ class LearnedPositionalEncoding(tf.keras.layers.Layer):
         cfg.update({"max_len": self.max_len, "d_model": self.d_model})
         return cfg
 
-def build_transformer_model_v2(seq_len=TARGET_SEQ_LEN, feature_dim=FEATURE_DIM, num_classes=17, dropout_rate=0.4, seed=42):
+def build_transformer_model(seq_len=TARGET_SEQ_LEN, feature_dim=FEATURE_DIM, num_classes=17, dropout_rate=0.3, seed=42):
     init   = tf.keras.initializers.GlorotUniform(seed=seed)
     inputs = tf.keras.Input(shape=(seq_len, feature_dim), name="input")
 
     x = tf.keras.layers.Lambda(lambda t: t * tf.math.sqrt(tf.cast(feature_dim, tf.float32)))(inputs)
     x = LearnedPositionalEncoding(max_len=seq_len, d_model=feature_dim)(x)
 
-    # num_blocks = 2
-    for _ in range(2):
-        # Multi-Head Attention (num_heads=2, key_dim=42)
-        attn_out = tf.keras.layers.MultiHeadAttention(num_heads=2, key_dim=42, dropout=dropout_rate, kernel_initializer=init)(x, x)
-        attn_out = tf.keras.layers.Dropout(dropout_rate)(attn_out)
-        x = tf.keras.layers.Add()([x, attn_out])
-        x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
+    attn_out = tf.keras.layers.MultiHeadAttention(num_heads=2, key_dim=74, dropout=dropout_rate, kernel_initializer=init)(x, x)
+    attn_out = tf.keras.layers.Dropout(dropout_rate)(attn_out)
 
-        # Feed Forward Network (ff_dim_multiplier=2 -> feature_dim * 2)
-        ffn_dim = feature_dim * 2
-        ffn = tf.keras.layers.Dense(ffn_dim, activation="relu", kernel_initializer=init)(x)
-        ffn = tf.keras.layers.Dropout(dropout_rate)(ffn)
-        ffn = tf.keras.layers.Dense(feature_dim, activation=None, kernel_initializer=init)(ffn)
-        
-        x = tf.keras.layers.Add()([x, ffn])
-        x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
+    x = tf.keras.layers.Add()([x, attn_out])
+    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
 
+    ffn = tf.keras.layers.Dense(feature_dim, activation="relu", kernel_initializer=init)(x)
+    ffn = tf.keras.layers.Dropout(dropout_rate)(ffn)
+    ffn = tf.keras.layers.Dense(feature_dim, activation=None, kernel_initializer=init)(ffn)
+
+    x = tf.keras.layers.Add()([x, ffn])
+    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
     x = tf.keras.layers.GlobalAveragePooling1D()(x)
     x = tf.keras.layers.Dropout(dropout_rate)(x)
 
     outputs = tf.keras.layers.Dense(num_classes, activation="softmax", kernel_initializer=init)(x)
-    return tf.keras.Model(inputs=inputs, outputs=outputs, name="transformer_model_v2")
+    return tf.keras.Model(inputs=inputs, outputs=outputs, name="transformer_encoder_only")
